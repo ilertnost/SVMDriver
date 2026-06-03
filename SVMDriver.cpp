@@ -294,8 +294,21 @@ IOReturn com_amd_svm_uc::externalMethod(uint32_t selector,
         // CPL = 0 at 0x4CA
         W16(0x4CA, 0);
 
+        // Ensure SVM is enabled before any SVM instruction (VMSAVE/VMRUN)
+        uint64_t efer = rdmsr(MSR_EFER);
+        if (!(efer & EFER_SVME)) {
+            wrmsr(MSR_EFER, efer | EFER_SVME);
+            efer = rdmsr(MSR_EFER);
+            if (!(efer & EFER_SVME)) {
+                IOLog("SVM-UC: SVM disabled at runtime\n");
+                return kIOReturnNotReady;
+            }
+        }
+
         // --- 64-bit Long Mode control registers ---
-        W64(0x4D0, (1ULL << 8) | (1ULL << 10) | (1ULL << 0)); // EFER = LME|LMA|SCE
+        // Guest EFER = host EFER + LME|LMA, minus SVME (guest doesn't need SVM)
+        // This ensures NXE, SCE, FFXSR bits match host (required for VMRUN in 64-bit mode)
+        W64(0x4D0, (efer & ~EFER_SVME) | (1ULL << 8) | (1ULL << 10));
         W64(0x548, (1ULL << 5));                               // CR4 = PAE
         W64(0x550, pml4_pa);                                   // CR3 = guest PML4
         W64(0x558, (1ULL << 31) | (1ULL << 0) | (1ULL << 4) | (1ULL << 1)); // CR0 = PG|PE|ET|MP
@@ -314,6 +327,10 @@ IOReturn com_amd_svm_uc::externalMethod(uint32_t selector,
 
         // CR2 = 0
         W64(0x640, 0);
+
+        // Clear debug registers (host DR state must not interfere with guest)
+        W64(0x560, 0); // DR7
+        W64(0x568, 0); // DR6
 
         // --- Control area ---
         W32(0x008, (1 << 14));              // Intercept #PF
@@ -368,17 +385,6 @@ IOReturn com_amd_svm_uc::externalMethod(uint32_t selector,
         // VMSAVE writes TR at VMCB offset 0x490 (state save base 0x400 + TR offset 0x090)
         for (int i = 0; i < 16; i++)
             v[0x490 + i] = tr_page[0x490 + i];
-
-        // Ensure SVM is enabled before VMRUN
-        uint64_t efer = rdmsr(MSR_EFER);
-        if (!(efer & EFER_SVME)) {
-            wrmsr(MSR_EFER, efer | EFER_SVME);
-            efer = rdmsr(MSR_EFER);
-            if (!(efer & EFER_SVME)) {
-                IOLog("SVM-UC: SVM disabled at runtime\n");
-                return kIOReturnNotReady;
-            }
-        }
 
         // Save host state that VMRUN does not preserve
         uint64_t save_fs_base   = rdmsr(0xC0000100); // MSR_FS_BASE
