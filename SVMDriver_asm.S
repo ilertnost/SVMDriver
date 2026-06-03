@@ -38,7 +38,8 @@ _svm_execute_vmrun:
 
     // 5. VMSAVE host state to host_save_pa
     movq    %r15, %rax
-    .byte 0x0F, 0x01, 0xD8       // vmsave %rax
+    // 0F 01 DB = VMSAVE (NOT 0xD8 = VMRUN!)
+    .byte 0x0F, 0x01, 0xDB       // vmsave %rax
 
     // 5b. Clear Busy bit in saved host TR so VMLOAD at exit doesn't #GP.
     //     TR attrib is at state-block offset 0x090 + 2 = 0x092.
