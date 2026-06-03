@@ -426,14 +426,24 @@ IOReturn com_amd_svm_uc::externalMethod(uint32_t selector,
         asm volatile(".byte 0x0F, 0x01, 0xDB\n\t" : : "a"(tr_pa) : "memory");
         uint8_t *tr_page = (uint8_t *)trmd->getBytesNoCopy();
 
-        // Per AMD APM, VMSAVE writes state-save-block format (offsets relative to 0).
-        // TR is at VMSAVE internal offset 0x090 within the state save layout.
-        // Guest VMCB has state save area at absolute offset 0x400, so TR goes to 0x490.
-        // Log raw TR data to verify offset:
-        IOLog("SVM-UC: VMSAVE tr[0x090]=%016llx:%016llx\n",
-              *(uint64_t *)(tr_page + 0x090), *(uint64_t *)(tr_page + 0x098));
+        // VMSAVE writes state-save format. TR segment lives at state-save offset 0x090.
+        // In full VMCB (0x400 base), TR = 0x490. In block format (base 0), TR = 0x090.
+        // Log both possibilities to see which has data:
+        uint64_t tr0_lo = *(uint64_t *)(tr_page + 0x090);
+        uint64_t tr0_hi = *(uint64_t *)(tr_page + 0x098);
+        uint64_t tr4_lo = *(uint64_t *)(tr_page + 0x490);
+        uint64_t tr4_hi = *(uint64_t *)(tr_page + 0x498);
+        IOLog("SVM-UC: VMSAVE tr[0x090]=%016llx:%016llx [0x490]=%016llx:%016llx\n",
+              tr0_lo, tr0_hi, tr4_lo, tr4_hi);
+
+        // TR selector (low 16 bits) must be non-zero for VMRUN to accept guest state.
+        // Pick the offset that has valid-looking data (selector != 0).
+        int tr_src = 0x490; // default to full-VMCB layout
+        if (tr0_lo && !tr4_lo) tr_src = 0x090; // only 0x090 has data
+        else if (!tr0_lo && tr4_lo) tr_src = 0x490; // only 0x490 has data
+        IOLog("SVM-UC: TR copied from VMSAVE+0x%x\n", tr_src);
         for (int i = 0; i < 16; i++)
-            v[0x490 + i] = tr_page[0x090 + i];
+            v[0x490 + i] = tr_page[tr_src + i];
 
         svm_execute_vmrun(&host_rsp_backup, guest_pa, hsave_pa);
 
@@ -483,6 +493,71 @@ IOReturn com_amd_svm_uc::externalMethod(uint32_t selector,
         uint8_t *v = (uint8_t *)fVM->vmcb;
         args->scalarOutput[0] = *(uint64_t *)(v + 0x070);
         args->scalarOutput[1] = *(uint64_t *)(v + 0x078);
+        return kIOReturnSuccess;
+    }
+    case SVM_METHOD_HW_PROBE: {
+        IOLog("SVM-UC: HW_PROBE started\n");
+        // Allocate a page to capture VMSAVE output
+        IOBufferMemoryDescriptor *probe_md = IOBufferMemoryDescriptor::inTaskWithOptions(
+            kernel_task, kIODirectionInOut, PAGE_SIZE);
+        if (!probe_md) return kIOReturnNoMemory;
+        if (probe_md->prepare(kIODirectionInOut) != kIOReturnSuccess) {
+            probe_md->release(); return kIOReturnIOError;
+        }
+        IOByteCount segLen = PAGE_SIZE;
+        uint64_t probe_pa = probe_md->getPhysicalSegment(0, &segLen, kIODirectionInOut);
+        if (!probe_pa) {
+            probe_md->release(); return kIOReturnIOError;
+        }
+        bzero(probe_md->getBytesNoCopy(), PAGE_SIZE);
+
+        // Enable SVM, VMSAVE with proper interrupt protection
+        uint64_t efer = rdmsr(MSR_EFER);
+        uint64_t orig_efer = efer;
+        if (!(efer & EFER_SVME)) {
+            wrmsr(MSR_EFER, efer | EFER_SVME);
+            efer |= EFER_SVME;
+        }
+        boolean_t prev_intr = ml_set_interrupts_enabled(FALSE);
+        asm volatile(".byte 0x0F, 0x01, 0xDB\n\t" : : "a"(probe_pa) : "memory");
+        ml_set_interrupts_enabled(prev_intr);
+        if (!(orig_efer & EFER_SVME))
+            wrmsr(MSR_EFER, orig_efer);
+
+        // Read VMSAVE output
+        uint8_t *probe_page = (uint8_t *)probe_md->getBytesNoCopy();
+        // State-save area starts at VMCB offset 0x400, segments: ES(0x00) CS(0x10) SS(0x20) DS(0x30) FS(0x40) GS(0x50) GDTR(0x60) LDTR(0x70) IDTR(0x80) TR(0x90)
+        // VMSAVE may write full VMCB format (TR at 0x490) or block format (TR at 0x090)
+        uint64_t tr090_lo = *(uint64_t *)(probe_page + 0x090);
+        uint64_t tr090_hi = *(uint64_t *)(probe_page + 0x098);
+        uint64_t tr490_lo = *(uint64_t *)(probe_page + 0x490);
+        uint64_t tr490_hi = *(uint64_t *)(probe_page + 0x498);
+        // Also dump GDTR/LDTR/IDTR to verify entire state-save block
+        uint64_t gdtr060 = *(uint64_t *)(probe_page + 0x060);
+        uint64_t gdtr068 = *(uint64_t *)(probe_page + 0x068);
+        uint64_t ldtr070 = *(uint64_t *)(probe_page + 0x070);
+        uint64_t ldtr078 = *(uint64_t *)(probe_page + 0x078);
+        uint64_t idtr080 = *(uint64_t *)(probe_page + 0x080);
+        uint64_t idtr088 = *(uint64_t *)(probe_page + 0x088);
+        // Same at 0x400+ offsets
+        uint64_t gdtr460 = *(uint64_t *)(probe_page + 0x460);
+        uint64_t gdtr468 = *(uint64_t *)(probe_page + 0x468);
+
+        IOLog("SVM-UC: HW_PROBE VMSAVE output:\n");
+        IOLog("  TR  [0x090]=%016llx:%016llx  [0x490]=%016llx:%016llx\n",
+              tr090_lo, tr090_hi, tr490_lo, tr490_hi);
+        IOLog("  GDTR[0x060]=%016llx:%016llx  [0x460]=%016llx:%016llx\n",
+              gdtr060, gdtr068, gdtr460, gdtr468);
+        IOLog("  LDTR[0x070]=%016llx:%016llx  IDTR[0x080]=%016llx:%016llx\n",
+              ldtr070, ldtr078, idtr080, idtr088);
+
+        args->scalarOutput[0] = tr090_lo;
+        args->scalarOutput[1] = tr090_hi;
+        args->scalarOutput[2] = tr490_lo;
+        args->scalarOutput[3] = tr490_hi;
+
+        probe_md->complete(kIODirectionInOut);
+        probe_md->release();
         return kIOReturnSuccess;
     }
     default:

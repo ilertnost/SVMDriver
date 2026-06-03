@@ -20,11 +20,12 @@
 #define SVM_USER_CLIENT  "com_amd_svm_uc"
 
 enum {
-    SVM_METHOD_CREATE_VM   = 0,
-    SVM_METHOD_DESTROY_VM  = 1,
-    SVM_METHOD_VMRUN       = 2,
+    SVM_METHOD_CREATE_VM    = 0,
+    SVM_METHOD_DESTROY_VM   = 1,
+    SVM_METHOD_VMRUN        = 2,
     SVM_METHOD_GET_FEATURES = 3,
-    SVM_METHOD_GET_EXIT    = 4,
+    SVM_METHOD_GET_EXIT     = 4,
+    SVM_METHOD_HW_PROBE     = 5,
 };
 
 enum vm_exit_codes {
