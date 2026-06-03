@@ -418,11 +418,24 @@ IOReturn com_amd_svm_uc::externalMethod(uint32_t selector,
         if (!(efer2 & EFER_SVME))
             wrmsr(MSR_EFER, efer2 | EFER_SVME);
 
-        // Save host TR via VMSAVE, copy to guest VMCB (VMRUN needs valid TR)
+        // Save host TR via VMSAVE, then copy to guest VMCB (VMRUN needs valid TR)
         asm volatile(".byte 0x0F, 0x01, 0xDB\n\t" : : "a"(tr_pa) : "memory");
         uint8_t *tr_page = (uint8_t *)trmd->getBytesNoCopy();
+
+        // Debug: dump VMSAVE output at both possible TR offsets
+        uint64_t tr_dbg_090 = *(uint64_t *)(tr_page + 0x090);
+        uint64_t tr_dbg_098 = *(uint64_t *)(tr_page + 0x098);
+        uint64_t tr_dbg_490 = *(uint64_t *)(tr_page + 0x490);
+        uint64_t tr_dbg_498 = *(uint64_t *)(tr_page + 0x498);
+        IOLog("SVM-UC: VMSAVE tr[0x090]=%016llx:%016llx [0x490]=%016llx:%016llx\n",
+              tr_dbg_090, tr_dbg_098, tr_dbg_490, tr_dbg_498);
+
+        // VMSAVE saves state-save-block format (TR at internal offset 0x090).
+        // Guest VMCB has state save at 0x400, so TR is at absolute 0x490.
+        int tr_src = (tr_dbg_090 != 0 && tr_dbg_490 == 0) ? 0x090 : 0x490;
         for (int i = 0; i < 16; i++)
-            v[0x490 + i] = tr_page[0x490 + i];
+            v[0x490 + i] = tr_page[tr_src + i];
+        IOLog("SVM-UC: TR copied from VMSAVE offset 0x%x\n", tr_src);
 
         svm_execute_vmrun(&host_rsp_backup, guest_pa, hsave_pa);
 
