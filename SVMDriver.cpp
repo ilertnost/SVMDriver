@@ -7,7 +7,8 @@
 #include "AMDSVM.h"
 
 // External function defined in SVMDriver.S
-extern "C" void svm_execute_vmrun(uint64_t *rsp_backup, uint64_t guest_pa, uint64_t host_pa);
+extern "C" void svm_execute_vmrun(uint64_t *rsp_backup, uint64_t guest_pa,
+                                  uint64_t host_pa, void *host_vaddr);
 
 #define super IOService
 
@@ -445,7 +446,8 @@ IOReturn com_amd_svm_uc::externalMethod(uint32_t selector,
         for (int i = 0; i < 16; i++)
             v[0x490 + i] = tr_page[tr_src + i];
 
-        svm_execute_vmrun(&host_rsp_backup, guest_pa, hsave_pa);
+        void *hsave_vaddr = hsave_md->getBytesNoCopy();
+        svm_execute_vmrun(&host_rsp_backup, guest_pa, hsave_pa, hsave_vaddr);
 
         ml_set_interrupts_enabled(prev_intr);
         

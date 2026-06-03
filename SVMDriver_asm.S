@@ -40,6 +40,12 @@ _svm_execute_vmrun:
     movq    %r15, %rax
     .byte 0x0F, 0x01, 0xD8       // vmsave %rax
 
+    // 5b. Clear Busy bit in saved host TR so VMLOAD at exit doesn't #GP.
+    //     TR attrib is at state-block offset 0x090 + 2 = 0x092.
+    //     4th arg (host_vaddr) is at RSP+0x60 (saved rcx in push sequence).
+    movq    0x60(%rsp), %rbx      // rbx = host_vaddr
+    andb    $~0x02, 0x92(%rbx)    // clear bit 1 (Busy) in TR.attrib
+
     // 6. Disable host interrupts before VMRUN
     cli
 
