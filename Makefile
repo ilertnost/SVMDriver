@@ -3,8 +3,8 @@ SDK   = macosx26.5
 KDK   = /Library/Developer/KDKs/KDK_26.5_25F71.kdk
 
 CXX   = xcrun -sdk $(SDK) cc
-SRC   = SVMDriver.cpp
-OBJ   = $(SRC:.cpp=.o)
+SRC   = SVMDriver.cpp SVMDriver.S
+OBJ   = SVMDriver.o SVMDriver.S.o
 
 KERNEL_FRAMEWORK = $(shell xcrun -sdk macosx26.5 --show-sdk-path)/System/Library/Frameworks/Kernel.framework
 
@@ -49,6 +49,9 @@ $(TARGET).kext/Contents/MacOS/$(TARGET): $(OBJ) Info.plist
 	@echo "=== Built: $(TARGET).kext ==="
 
 %.o: %.cpp AMDSVM.h
+	$(CXX) $(CXXFLAGS) -c $< -o $@
+
+%.o: %.S
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 
 clean:

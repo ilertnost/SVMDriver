@@ -5,6 +5,9 @@
 #include <mach/kmod.h>
 #include "AMDSVM.h"
 
+// External function defined in SVMDriver.S
+extern "C" void svm_execute_vmrun(uint64_t *rsp_backup, uint64_t guest_pa, uint64_t host_pa);
+
 #define super IOService
 
 class com_amd_svm;
@@ -259,6 +262,9 @@ IOReturn com_amd_svm_uc::externalMethod(uint32_t selector,
         W64(0x640, 0);
 
         // --- Control area ---
+        // Intercept exceptions: bit 14 = #PF (Page Fault)
+        W32(0x008, (1 << 14));
+
         // Intercept[3] at 0x00C: bit 18=CPUID, bit 24=HLT, bit 31=SHUTDOWN
         W32(0x00C, (1 << 18) | (1 << 24) | (1 << 31));
 
@@ -325,10 +331,10 @@ IOReturn com_amd_svm_uc::externalMethod(uint32_t selector,
             }
         }
 
-        // Save host FS/GS base and other MSRs
-        uint64_t save_fs_base   = rdmsr(0xC0000100);
-        uint64_t save_gs_base   = rdmsr(0xC0000101);
-        uint64_t save_kgs_base  = rdmsr(0xC0000102);
+        // Save host state that VMRUN does not preserve
+        uint64_t save_fs_base   = rdmsr(0xC0000100); // MSR_FS_BASE
+        uint64_t save_gs_base   = rdmsr(0xC0000101); // MSR_GS_BASE
+        uint64_t save_kgs_base  = rdmsr(0xC0000102); // MSR_KERNEL_GS_BASE
         uint64_t save_star      = rdmsr(0xC0000081);
         uint64_t save_lstar     = rdmsr(0xC0000082);
         uint64_t save_cstar     = rdmsr(0xC0000083);
@@ -336,13 +342,13 @@ IOReturn com_amd_svm_uc::externalMethod(uint32_t selector,
         uint64_t save_sys_cs    = rdmsr(0x174);
         uint64_t save_sys_esp   = rdmsr(0x175);
         uint64_t save_sys_eip   = rdmsr(0x176);
+        uint64_t host_rsp_backup = 0;
 
         IOLog("SVM-UC: VMRUN pa=0x%llx EFER=0x%llx\n", guest_pa, efer);
-        asm volatile(
-            ".byte 0x0F, 0x01, 0xD8\n\t"  // vmrun %rax
-            : : "a"(guest_pa) : "memory", "cc"
-        );
-
+        
+        // Call the robust assembly wrapper
+        svm_execute_vmrun(&host_rsp_backup, guest_pa, hsave_pa);
+        
         // Restore host MSRs (VMRUN does not preserve these)
         wrmsr(0xC0000100, save_fs_base);
         wrmsr(0xC0000101, save_gs_base);
