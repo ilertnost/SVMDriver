@@ -3,8 +3,8 @@ SDK   = macosx26.5
 KDK   = /Library/Developer/KDKs/KDK_26.5_25F71.kdk
 
 CXX   = xcrun -sdk $(SDK) cc
-SRC   = SVMDriver.cpp SVMDriver.S
-OBJ   = SVMDriver.o SVMDriver.S.o
+SRC   = SVMDriver.cpp SVMDriver_asm.S
+OBJ   = SVMDriver.o SVMDriver_asm.o
 
 KERNEL_FRAMEWORK = $(shell xcrun -sdk macosx26.5 --show-sdk-path)/System/Library/Frameworks/Kernel.framework
 
