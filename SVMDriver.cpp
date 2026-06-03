@@ -291,7 +291,7 @@ IOReturn com_amd_svm_uc::externalMethod(uint32_t selector,
         for (int i = 0; i < 6; i++) {
             int off = 0x400 + i * 16;
             W16(off, 0);          // selector = 0
-            W16(off + 2, 0x2093); // attrib
+            W16(off + 2, (i >= 4) ? 0xC093 : 0x2093); // attrib (0xC093 for FS/GS for Zen stability)
             W32(off + 4, 0xFFFFFFFF); // limit (flat)
             W64(off + 8, 0);      // base = 0
         }
@@ -410,6 +410,12 @@ IOReturn com_amd_svm_uc::externalMethod(uint32_t selector,
         uint64_t host_rsp_backup = 0;
 
         IOLog("SVM-UC: VMRUN pa=0x%llx EFER=0x%llx\n", guest_pa, efer);
+
+        // Synchronize x86_64 syscall MSRs with host to avoid Zen microcode hangs
+        W64(0x594, rdmsr(0xC0000081)); // Guest STAR = host STAR
+        W64(0x59C, rdmsr(0xC0000082)); // Guest LSTAR = host LSTAR
+        W64(0x5A4, rdmsr(0xC0000083)); // Guest CSTAR = host CSTAR
+        W64(0x5AC, rdmsr(0xC0000084)); // Guest SFMASK = host SFMASK
 
         // Disable host interrupts to prevent thread migration during VMRUN
         boolean_t prev_intr = ml_set_interrupts_enabled(FALSE);
