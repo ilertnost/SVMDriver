@@ -499,6 +499,24 @@ IOReturn com_amd_svm_uc::externalMethod(uint32_t selector,
     }
     case SVM_METHOD_HW_PROBE: {
         IOLog("SVM-UC: HW_PROBE started\n");
+
+        // Diagnose SVM state before any instruction
+        uint64_t vmcr = rdmsr(0xC0010114); // MSR_VM_CR
+        uint64_t efer_hi = rdmsr(MSR_EFER);
+        uint32_t a,b,c,d;
+        cpuid(0x8000000A, 0, &a, &b, &c, &d);
+        IOLog("SVM-UC: VM_CR=0x%llx SVM_DIS=%d SVM_LOCK=%d\n",
+              vmcr, !!(vmcr & 0x10), !!(vmcr & 0x08));
+        IOLog("SVM-UC: EFER=0x%llx SVME=%d\n", efer_hi, !!(efer_hi & 0x1000));
+        IOLog("SVM-UC: CPUID[0x8000000A] SVM=%d rev=0x%x features=0x%x\n", (d & 1), a, d);
+
+        // If SVM_DIS or locked, can't proceed
+        if (vmcr & 0x18) { // SVM_DIS | SVM_LOCK
+            IOLog("SVM-UC: ERROR — SVM is locked/disabled by firmware\n");
+            args->scalarOutput[0] = 0xFFFFFFFF;
+            return kIOReturnUnsupported;
+        }
+
         // Allocate a page to capture VMSAVE output
         IOBufferMemoryDescriptor *probe_md = IOBufferMemoryDescriptor::inTaskWithOptions(
             kernel_task, kIODirectionInOut, PAGE_SIZE);
@@ -512,36 +530,40 @@ IOReturn com_amd_svm_uc::externalMethod(uint32_t selector,
             probe_md->release(); return kIOReturnIOError;
         }
         bzero(probe_md->getBytesNoCopy(), PAGE_SIZE);
+        IOLog("SVM-UC: probe_pa=0x%llx\n", probe_pa);
 
-        // Enable SVM, VMSAVE with proper interrupt protection
-        uint64_t efer = rdmsr(MSR_EFER);
-        uint64_t orig_efer = efer;
-        if (!(efer & EFER_SVME)) {
-            wrmsr(MSR_EFER, efer | EFER_SVME);
-            efer |= EFER_SVME;
+        // Enable SVME locally
+        uint64_t orig_efer = efer_hi;
+        if (!(efer_hi & EFER_SVME)) {
+            wrmsr(MSR_EFER, efer_hi | EFER_SVME);
+            efer_hi = rdmsr(MSR_EFER);
+            IOLog("SVM-UC: EFER after SVME set = 0x%llx (SVME=%d)\n",
+                  efer_hi, !!(efer_hi & 0x1000));
+            if (!(efer_hi & EFER_SVME)) {
+                IOLog("SVM-UC: ERROR — could not enable SVME\n");
+                probe_md->release(); return kIOReturnIOError;
+            }
         }
-        boolean_t prev_intr = ml_set_interrupts_enabled(FALSE);
+
+        // VMSAVE with interrupts ENABLED so any #UD is catchable
         asm volatile(".byte 0x0F, 0x01, 0xDB\n\t" : : "a"(probe_pa) : "memory");
-        ml_set_interrupts_enabled(prev_intr);
+
+        // Restore SVME if we changed it
         if (!(orig_efer & EFER_SVME))
             wrmsr(MSR_EFER, orig_efer);
 
         // Read VMSAVE output
         uint8_t *probe_page = (uint8_t *)probe_md->getBytesNoCopy();
-        // State-save area starts at VMCB offset 0x400, segments: ES(0x00) CS(0x10) SS(0x20) DS(0x30) FS(0x40) GS(0x50) GDTR(0x60) LDTR(0x70) IDTR(0x80) TR(0x90)
-        // VMSAVE may write full VMCB format (TR at 0x490) or block format (TR at 0x090)
         uint64_t tr090_lo = *(uint64_t *)(probe_page + 0x090);
         uint64_t tr090_hi = *(uint64_t *)(probe_page + 0x098);
         uint64_t tr490_lo = *(uint64_t *)(probe_page + 0x490);
         uint64_t tr490_hi = *(uint64_t *)(probe_page + 0x498);
-        // Also dump GDTR/LDTR/IDTR to verify entire state-save block
         uint64_t gdtr060 = *(uint64_t *)(probe_page + 0x060);
         uint64_t gdtr068 = *(uint64_t *)(probe_page + 0x068);
         uint64_t ldtr070 = *(uint64_t *)(probe_page + 0x070);
         uint64_t ldtr078 = *(uint64_t *)(probe_page + 0x078);
         uint64_t idtr080 = *(uint64_t *)(probe_page + 0x080);
         uint64_t idtr088 = *(uint64_t *)(probe_page + 0x088);
-        // Same at 0x400+ offsets
         uint64_t gdtr460 = *(uint64_t *)(probe_page + 0x460);
         uint64_t gdtr468 = *(uint64_t *)(probe_page + 0x468);
 
