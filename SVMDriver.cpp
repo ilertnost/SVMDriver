@@ -3,6 +3,7 @@
 #include <IOKit/IOLib.h>
 #include <IOKit/IOMemoryDescriptor.h>
 #include <mach/kmod.h>
+#include <machine/machine_routines.h>
 #include "AMDSVM.h"
 
 // External function defined in SVMDriver.S
@@ -230,9 +231,8 @@ IOReturn com_amd_svm_uc::externalMethod(uint32_t selector,
 #define R64(o)    (*(uint64_t *)(v + (o)))
 
         // --- 64-bit Long Mode Guest Setup ---
-        // Allocate and build identity-mapped page tables (PML4, PDPT, PD)
-        // Each is one 4KB page, all zeros except the entries needed to map
-        // the guest code page (at guest_pa + 0xF00) through 2MB large pages.
+        // Allocate and build identity-mapped page tables (PML4, PDPT, PD, PT)
+        // 4KB paging (no 2MB huge pages) to avoid Zen 2 prefetcher issues.
 
         static IOBufferMemoryDescriptor *pml4_md = NULL;
         static uint64_t pml4_pa = 0;
@@ -240,6 +240,8 @@ IOReturn com_amd_svm_uc::externalMethod(uint32_t selector,
         static uint64_t pdp_pa = 0;
         static IOBufferMemoryDescriptor *pd_md = NULL;
         static uint64_t pd_pa = 0;
+        static IOBufferMemoryDescriptor *pt_md = NULL;
+        static uint64_t pt_pa = 0;
 
         if (!pml4_md) {
             pml4_md = IOBufferMemoryDescriptor::inTaskWithOptions(
@@ -248,28 +250,36 @@ IOReturn com_amd_svm_uc::externalMethod(uint32_t selector,
                 kernel_task, kIODirectionInOut, PAGE_SIZE);
             pd_md = IOBufferMemoryDescriptor::inTaskWithOptions(
                 kernel_task, kIODirectionInOut, PAGE_SIZE);
-            if (pml4_md && pdp_md && pd_md &&
+            pt_md = IOBufferMemoryDescriptor::inTaskWithOptions(
+                kernel_task, kIODirectionInOut, PAGE_SIZE);
+            if (pml4_md && pdp_md && pd_md && pt_md &&
                 pml4_md->prepare(kIODirectionInOut) == kIOReturnSuccess &&
                 pdp_md->prepare(kIODirectionInOut) == kIOReturnSuccess &&
-                pd_md->prepare(kIODirectionInOut) == kIOReturnSuccess) {
+                pd_md->prepare(kIODirectionInOut) == kIOReturnSuccess &&
+                pt_md->prepare(kIODirectionInOut) == kIOReturnSuccess) {
                 IOByteCount segLen = PAGE_SIZE;
                 pml4_pa = pml4_md->getPhysicalSegment(0, &segLen, kIODirectionInOut);
                 pdp_pa = pdp_md->getPhysicalSegment(0, &segLen, kIODirectionInOut);
                 pd_pa = pd_md->getPhysicalSegment(0, &segLen, kIODirectionInOut);
+                pt_pa = pt_md->getPhysicalSegment(0, &segLen, kIODirectionInOut);
                 bzero(pml4_md->getBytesNoCopy(), PAGE_SIZE);
                 bzero(pdp_md->getBytesNoCopy(), PAGE_SIZE);
                 bzero(pd_md->getBytesNoCopy(), PAGE_SIZE);
+                bzero(pt_md->getBytesNoCopy(), PAGE_SIZE);
                 // PML4[0] → PDPT (covers first 512GB)
                 ((uint64_t *)pml4_md->getBytesNoCopy())[0] = pdp_pa | 0x03;
                 // PDPT[0] → PD (covers first 1GB)
                 ((uint64_t *)pdp_md->getBytesNoCopy())[0] = pd_pa | 0x03;
-                // PD[pd_idx] → 2MB identity page for guest_pa's 2MB chunk
+                // PD[pd_idx] → PT (4KB page table, no PS bit)
                 uint64_t pd_idx = (guest_pa >> 21) & 0x1FF;
-                uint64_t two_mb_base = guest_pa & 0xFFE00000ULL;
-                ((uint64_t *)pd_md->getBytesNoCopy())[pd_idx] = two_mb_base | 0x83;
+                ((uint64_t *)pd_md->getBytesNoCopy())[pd_idx] = pt_pa | 0x03;
+                // PT[pte_idx] → 4KB identity page for guest_pa
+                uint64_t pte_idx = (guest_pa >> 12) & 0x1FF;
+                uint64_t page_base = guest_pa & 0xFFFFFFFFFFFFF000ULL;
+                ((uint64_t *)pt_md->getBytesNoCopy())[pte_idx] = page_base | 0x03;
             }
         }
-        if (!pml4_pa || !pdp_pa || !pd_pa) {
+        if (!pml4_pa || !pdp_pa || !pd_pa || !pt_pa) {
             IOLog("SVM-UC: page table allocation failed\n");
             return kIOReturnIOError;
         }
@@ -313,10 +323,10 @@ IOReturn com_amd_svm_uc::externalMethod(uint32_t selector,
         W64(0x550, pml4_pa);                                   // CR3 = guest PML4
         W64(0x558, (1ULL << 31) | (1ULL << 0) | (1ULL << 4) | (1ULL << 1)); // CR0 = PG|PE|ET|MP
 
-        // RFLAGS, RIP, RSP
+        // RFLAGS, RIP, RSP (RSP within single-page allocation, just below code)
         W64(0x570, 2);                      // RFLAGS
         W64(0x578, guest_pa + 0xF00);       // RIP = identity-mapped code address
-        W64(0x5D8, guest_pa + 0x1F00);      // RSP = top of VMCB page (safe stack)
+        W64(0x5D8, guest_pa + 0xE00);       // RSP = below guest code (stack grows down)
 
         // GPRs (RBX/RCX/RDX/RBP at offsets 0x600, 0x608, 0x610, 0x5E0)
         W64(0x5E0, 0);                      // RBP = 0
@@ -379,11 +389,6 @@ IOReturn com_amd_svm_uc::externalMethod(uint32_t selector,
         }
         bzero(trmd->getBytesNoCopy(), PAGE_SIZE);
 
-        // Re-enable SVME on current core (thread may have migrated since initial enable)
-        efer = rdmsr(MSR_EFER);
-        if (!(efer & EFER_SVME))
-            wrmsr(MSR_EFER, efer | EFER_SVME);
-
         // Save host TR via VMSAVE, then copy it to guest VMCB so VMRUN preserves it
         asm volatile(".byte 0x0F, 0x01, 0xDB\n\t" : : "a"(tr_pa) : "memory");
         uint8_t *tr_page = (uint8_t *)trmd->getBytesNoCopy();
@@ -405,9 +410,11 @@ IOReturn com_amd_svm_uc::externalMethod(uint32_t selector,
         uint64_t host_rsp_backup = 0;
 
         IOLog("SVM-UC: VMRUN pa=0x%llx EFER=0x%llx\n", guest_pa, efer);
-        
-        // Call the robust assembly wrapper
+
+        // Disable host interrupts to prevent thread migration during VMRUN
+        boolean_t prev_intr = ml_set_interrupts_enabled(FALSE);
         svm_execute_vmrun(&host_rsp_backup, guest_pa, hsave_pa);
+        ml_set_interrupts_enabled(prev_intr);
         
         // Restore host MSRs (VMRUN does not preserve these)
         wrmsr(0xC0000100, save_fs_base);
