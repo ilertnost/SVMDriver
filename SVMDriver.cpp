@@ -89,13 +89,29 @@ static void disable_svm(void) {
 }
 
 bool com_amd_svm::start(IOService *provider) {
-    if (!super::start(provider)) return false;
+    IOLog("SVM: starting driver...\n");
+    if (!super::start(provider)) {
+        IOLog("SVM: super::start failed\n");
+        return false;
+    }
+    
+    IOLog("SVM: probing svm...\n");
     probe_svm();
-    if (!gSVMProbed) return false;
-    if (!enable_svm()) return false;
+    if (!gSVMProbed) {
+        IOLog("SVM: CPU does not support SVM\n");
+        return false;
+    }
+    
+    IOLog("SVM: enabling svm...\n");
+    if (!enable_svm()) {
+        IOLog("SVM: failed to enable svm\n");
+        return false;
+    }
+    
+    IOLog("SVM: registering service...\n");
     setProperty("SVM Supported", "Yes");
     registerService();
-    IOLog("SVM: driver loaded\n");
+    IOLog("SVM: driver loaded successfully\n");
     return true;
 }
 
