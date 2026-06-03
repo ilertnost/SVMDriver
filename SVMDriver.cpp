@@ -379,6 +379,11 @@ IOReturn com_amd_svm_uc::externalMethod(uint32_t selector,
         }
         bzero(trmd->getBytesNoCopy(), PAGE_SIZE);
 
+        // Re-enable SVME on current core (thread may have migrated since initial enable)
+        efer = rdmsr(MSR_EFER);
+        if (!(efer & EFER_SVME))
+            wrmsr(MSR_EFER, efer | EFER_SVME);
+
         // Save host TR via VMSAVE, then copy it to guest VMCB so VMRUN preserves it
         asm volatile(".byte 0x0F, 0x01, 0xDB\n\t" : : "a"(tr_pa) : "memory");
         uint8_t *tr_page = (uint8_t *)trmd->getBytesNoCopy();
