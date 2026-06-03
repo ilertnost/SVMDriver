@@ -66,7 +66,7 @@ SVM features: 0x1
 SVM enabled: YES
 
 VM created, handle: 0x...
-VMEXIT: code=0x81 info1=0x0
+VMEXIT: code=0x72 info1=0x0
 VM destroyed
 
 All tests passed!
@@ -77,8 +77,8 @@ All tests passed!
 - IOKit `IOService` (`com_amd_svm`) with `IOResources` provider
 - `IOUserClient` (`com_amd_svm_uc`) with shared-memory VMCB via `IOBufferMemoryDescriptor`
 - VMRUN/VMSAVE/VMLOAD via assembly wrapper (`SVMDriver_asm.S`)
-- 64-bit Long Mode guest with identity-mapped page tables
-- VMMCALL instruction for clean VMEXIT (exit code 0x081)
+- 64-bit Long Mode guest with identity-mapped page tables (PML4/PDPT/PD with 2MB pages)
+- CPUID instruction for first VMEXIT (exit code 0x072, hardware intercept, no host handler needed)
 
 ## Architecture
 

@@ -313,10 +313,11 @@ IOReturn com_amd_svm_uc::externalMethod(uint32_t selector,
         W32(0x058, 1);                      // Guest ASID = 1
         W32(0x0C0, 0);                      // VMCB Clean = 0 (reload all)
 
-        // Write VMMCALL (0F 01 D9) at offset 0xF00 for the first guest instruction
+        // Write CPUID (0F A2) + HLT (F4) at offset 0xF00
+        // CPUID with intercept bit 18 causes a clean hardware VMEXIT (code 0x72)
         v[0xF00] = 0x0F;
-        v[0xF01] = 0x01;
-        v[0xF02] = 0xD9;
+        v[0xF01] = 0xA2;
+        v[0xF02] = 0xF4;
 
         // Allocate host-save VMCB (4KB page for VMSAVE/VMLOAD and VMRUN host save)
         static IOBufferMemoryDescriptor *hsave_md = NULL;
