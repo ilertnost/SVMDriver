@@ -1,8 +1,8 @@
 .text
-.globl svm_execute_vmrun
+.globl _svm_execute_vmrun
 
 .p2align 3
-svm_execute_vmrun:
+_svm_execute_vmrun:
     # 1. Сохраняем все регистры общего назначения хоста в стек
     pushq %rax
     pushq %rbx

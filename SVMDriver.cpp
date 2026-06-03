@@ -227,69 +227,96 @@ IOReturn com_amd_svm_uc::externalMethod(uint32_t selector,
 #define W64(o, x) (*(uint64_t *)(v + (o)) = (uint64_t)(x))
 #define W32(o, x) (*(uint32_t *)(v + (o)) = (uint32_t)(x))
 #define W16(o, x) (*(uint16_t *)(v + (o)) = (uint16_t)(x))
+#define R64(o)    (*(uint64_t *)(v + (o)))
 
-        // --- State-save area (VMCB + 0x400) per Linux 5.15 layout ---
+        // --- 64-bit Long Mode Guest Setup ---
+        // Allocate and build identity-mapped page tables (PML4, PDPT, PD)
+        // Each is one 4KB page, all zeros except the entries needed to map
+        // the guest code page (at guest_pa + 0xF00) through 2MB large pages.
 
-        // Segments: ES,CS,SS,DS,FS,GS,GDTR,LDTR,IDTR,TR (16 bytes each)
-        //     Layout: selector(2), attrib(2), limit(4), base(8)
+        static IOBufferMemoryDescriptor *pml4_md = NULL;
+        static uint64_t pml4_pa = 0;
+        static IOBufferMemoryDescriptor *pdp_md = NULL;
+        static uint64_t pdp_pa = 0;
+        static IOBufferMemoryDescriptor *pd_md = NULL;
+        static uint64_t pd_pa = 0;
+
+        if (!pml4_md) {
+            pml4_md = IOBufferMemoryDescriptor::inTaskWithOptions(
+                kernel_task, kIODirectionInOut, PAGE_SIZE);
+            pdp_md = IOBufferMemoryDescriptor::inTaskWithOptions(
+                kernel_task, kIODirectionInOut, PAGE_SIZE);
+            pd_md = IOBufferMemoryDescriptor::inTaskWithOptions(
+                kernel_task, kIODirectionInOut, PAGE_SIZE);
+            if (pml4_md && pdp_md && pd_md &&
+                pml4_md->prepare(kIODirectionInOut) == kIOReturnSuccess &&
+                pdp_md->prepare(kIODirectionInOut) == kIOReturnSuccess &&
+                pd_md->prepare(kIODirectionInOut) == kIOReturnSuccess) {
+                IOByteCount segLen = PAGE_SIZE;
+                pml4_pa = pml4_md->getPhysicalSegment(0, &segLen, kIODirectionInOut);
+                pdp_pa = pdp_md->getPhysicalSegment(0, &segLen, kIODirectionInOut);
+                pd_pa = pd_md->getPhysicalSegment(0, &segLen, kIODirectionInOut);
+                bzero(pml4_md->getBytesNoCopy(), PAGE_SIZE);
+                bzero(pdp_md->getBytesNoCopy(), PAGE_SIZE);
+                bzero(pd_md->getBytesNoCopy(), PAGE_SIZE);
+                // PML4[0] → PDPT (covers first 512GB)
+                ((uint64_t *)pml4_md->getBytesNoCopy())[0] = pdp_pa | 0x03;
+                // PDPT[0] → PD (covers first 1GB)
+                ((uint64_t *)pdp_md->getBytesNoCopy())[0] = pd_pa | 0x03;
+                // PD[pd_idx] → 2MB identity page for guest_pa's 2MB chunk
+                uint64_t pd_idx = (guest_pa >> 21) & 0x1FF;
+                uint64_t two_mb_base = guest_pa & 0xFFE00000ULL;
+                ((uint64_t *)pd_md->getBytesNoCopy())[pd_idx] = two_mb_base | 0x83;
+            }
+        }
+        if (!pml4_pa || !pdp_pa || !pd_pa) {
+            IOLog("SVM-UC: page table allocation failed\n");
+            return kIOReturnIOError;
+        }
+
+        // --- Segments for 64-bit Long Mode ---
+        // ES,CS,SS,DS,FS,GS,GDTR,LDTR,IDTR,TR at offsets 0x400..0x4A0
         for (int i = 0; i < 10; i++) {
             int off = 0x400 + i * 16;
-            W16(off, 0);          // selector
-            W16(off + 2, 0x93);   // attrib: P=1,S=1,W=1
-            W32(off + 4, 0xFFFF); // limit (64K for real mode)
-            W64(off + 8, 0);      // base
+            W16(off, 0);          // selector = 0
+            W16(off + 2, 0x2093); // attrib: P=1,DPL=0,S=1,W=1
+            W32(off + 4, 0xFFFF); // limit
+            W64(off + 8, 0);      // base = 0
         }
-        // CS: real-mode code segment pointing to guest_pa + 0xF00
-        W16(0x410, 0);
-        W16(0x412, 0x93);       // present, read/write
-        W32(0x414, 0xFFFF);
-        W64(0x418, guest_pa + 0xF00);
+        // CS at index 1 (offset 0x410): 64-bit code segment
+        W16(0x410, 0x08);         // selector = 0x08
+        W16(0x412, 0x209B);       // attrib: P=1,DPL=0,S=1,Code=1,L=1,D=0
+        W32(0x414, 0xFFFFFFFF);   // limit (ignored in 64-bit but must be non-zero)
+        W64(0x418, 0);            // base = 0
 
-        // CPL at 0x4CB
-        W16(0x4CA, 0);           // vmpl=0, cpl=0
+        // CPL = 0 at 0x4CA
+        W16(0x4CA, 0);
 
-        // Control registers, EFER
-        uint64_t host_cr0, host_cr3, host_cr4, host_efer;
-        asm volatile("mov %%cr0, %0" : "=r"(host_cr0));
-        asm volatile("mov %%cr3, %0" : "=r"(host_cr3));
-        asm volatile("mov %%cr4, %0" : "=r"(host_cr4));
-        host_efer = rdmsr(MSR_EFER);
-
-        // Real-mode guest control registers (no paging, no protection)
-        // EFER must match host: VMRUN does NOT restore EFER on VMEXIT.
-        // If guest clears LME/SVME, host loses long mode after VMEXIT → crash.
-        W64(0x4D0, host_efer);              // EFER = host value
-        W64(0x548, 0);                      // CR4 = 0
-        W64(0x550, 0);                      // CR3 = 0
-        W64(0x558, 0x00000010);             // CR0 = ET (paging/protection off)
+        // --- 64-bit Long Mode control registers ---
+        W64(0x4D0, (1ULL << 8) | (1ULL << 10) | (1ULL << 0)); // EFER = LME|LMA|SCE
+        W64(0x548, (1ULL << 5));                               // CR4 = PAE
+        W64(0x550, pml4_pa);                                   // CR3 = guest PML4
+        W64(0x558, (1ULL << 31) | (1ULL << 0) | (1ULL << 4) | (1ULL << 1)); // CR0 = PG|PE|ET|MP
 
         // RFLAGS, RIP, RSP
-        W64(0x570, 2);                      // RFLAGS (bit 1 = always 1)
-        W64(0x578, 0);                      // RIP = 0 (offset within CS)
-        W64(0x5D8, 0);                      // RSP = 0
+        W64(0x570, 2);                      // RFLAGS
+        W64(0x578, guest_pa + 0xF00);       // RIP = identity-mapped code address
+        W64(0x5D8, 0);                      // RSP
 
         // RAX = 0
         W64(0x5F8, 0);
-
-        // CR2 = 0
-        W64(0x640, 0);
+        W64(0x640, 0);                      // CR2 = 0
 
         // --- Control area ---
-        // Intercept exceptions: bit 14 = #PF (Page Fault)
-        W32(0x008, (1 << 14));
+        W32(0x008, (1 << 14));              // Intercept #PF
+        W32(0x00C, (1 << 1) | (1 << 18) | (1 << 24) | (1 << 31)); // VMMCALL|CPUID|HLT|SHUTDOWN
+        W32(0x058, 1);                      // Guest ASID = 1
+        W32(0x0C0, 0);                      // VMCB Clean = 0 (reload all)
 
-        // Intercept[3] at 0x00C: bit 18=CPUID, bit 24=HLT, bit 31=SHUTDOWN
-        W32(0x00C, (1 << 18) | (1 << 24) | (1 << 31));
-
-        // Guest ASID at offset 0x058 (per Linux HSAVE layout)
-        W32(0x058, 1);
-
-        // VMCB Clean at 0x0C0 = 0 (reload all on next VMRUN)
-        W32(0x0C0, 0);
-
-        // Write CPUID instruction (0x0F 0x0A) at offset 0xF00
+        // Write VMMCALL (0F 01 D9) at offset 0xF00 for the first guest instruction
         v[0xF00] = 0x0F;
-        v[0xF01] = 0x0A;
+        v[0xF01] = 0x01;
+        v[0xF02] = 0xD9;
 
         // Allocate host-save VMCB (4KB page for VMSAVE/VMLOAD and VMRUN host save)
         static IOBufferMemoryDescriptor *hsave_md = NULL;

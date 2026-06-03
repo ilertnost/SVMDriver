@@ -3,23 +3,94 @@
 An experimental kernel extension for AMD SVM (Secure Virtual Machine) virtualization on macOS.
 
 ## Purpose
-This driver is designed to enable hardware-accelerated virtualization on AMD Ryzen-based Mac systems (Hackintosh), specifically targeting macOS versions like macOS Tahoe. It aims to provide a foundation for virtualization tools (e.g., Docker, AOSP builds) to run with native SVM acceleration.
+This driver enables hardware-accelerated virtualization on AMD Ryzen-based Hackintosh systems (macOS Tahoe+). It provides a foundation for native SVM acceleration in tools like Docker, colima, and AOSP builds.
 
 ## Status: Under Development ⚠️
-**This driver is currently in active development.** 
+**Experimental** — proof-of-concept, may cause kernel panics. Use at your own risk.
 
-- **Experimental**: The code is a proof-of-concept and may be unstable.
-- **No Guarantees**: Stability and functionality are not guaranteed.
-- **Use at your own risk**: Loading an experimental kernel extension can lead to system instability or kernel panics.
+## Requirements
 
-## Development Goals
-- Implement a minimal SVM environment (World Switch).
-- Enable basic intercepts (CPUID, HLT, etc.).
-- Provide a user-space interface via `IOUserClient` for testing and control.
-- Verify correct state saving/restoring of host and guest registers.
+- AMD Ryzen CPU (Zen 2/Zen 3) with SVM support
+- macOS 26.x (Tahoe) with KDK 26.5 installed
+- SIP partially disabled (`csr-active-config = 0x803`)
+- [AMFIPass.kext](https://github.com/ilertnost/AMFIPass/releases) for unsigned kext loading
+- Xcode Command Line Tools
 
-## Current Implementation
-- IOKit `IOService` for driver lifecycle.
-- `IOUserClient` for userspace communication.
-- Shared-memory VMCB for guest state configuration.
-- Basic VMRUN loop for testing VMEXIT handling.
+## Build
+
+```bash
+cd SVMDriver
+make
+```
+
+## Install (runtime, without reboot)
+
+```bash
+sudo cp -R SVMDriver.kext /Library/Extensions/
+sudo chown -R root:wheel /Library/Extensions/SVMDriver.kext
+sudo kextutil -v /Library/Extensions/SVMDriver.kext
+```
+
+## Install (via OpenCore, persists across reboots)
+
+1. Mount EFI partition:
+   ```bash
+   sudo mkdir -p /Volumes/EFI
+   sudo mount -t msdos /dev/disk0s1 /Volumes/EFI
+   ```
+2. Copy kext:
+   ```bash
+   sudo cp -R SVMDriver.kext /Volumes/EFI/EFI/OC/Kexts/
+   ```
+3. Add `SVMDriver.kext` to `Kernel -> Add` in `config.plist` **after** AMFIPass.kext.
+4. Unmount: `sudo diskutil unmount disk0s1`
+5. Reboot.
+
+## Userspace test tool
+
+Build and run:
+
+```bash
+cd svm_test
+cc -o svm_test svm_test.c
+./svm_test
+```
+
+Expected output on success:
+
+```
+SVMDriver test
+=============
+
+SVM features: 0x1
+SVM enabled: YES
+
+VM created, handle: 0x...
+VMEXIT: code=0x81 info1=0x0
+VM destroyed
+
+All tests passed!
+```
+
+## Implementation Details
+
+- IOKit `IOService` (`com_amd_svm`) with `IOResources` provider
+- `IOUserClient` (`com_amd_svm_uc`) with shared-memory VMCB via `IOBufferMemoryDescriptor`
+- VMRUN/VMSAVE/VMLOAD via assembly wrapper (`SVMDriver_asm.S`)
+- 64-bit Long Mode guest with identity-mapped page tables
+- VMMCALL instruction for clean VMEXIT (exit code 0x081)
+
+## Architecture
+
+```
+┌──────────────┐     IOConnectCallScalarMethod     ┌──────────────┐
+│  svm_test    │ ──────────────────────────────►   │ SVMDriver    │
+│  (userspace) │                                   │ (kernel)     │
+└──────────────┘                                   └──────┬───────┘
+                                                           │ VMRUN
+                                                           ▼
+                                                    ┌──────────────┐
+                                                    │ AMD CPU SVM  │
+                                                    │ (hardware)    │
+                                                    └──────────────┘
+
