@@ -418,10 +418,27 @@ IOReturn com_amd_svm_uc::externalMethod(uint32_t selector,
         // Disable interrupts: prevents thread migration during all SVM ops below
         boolean_t prev_intr = ml_set_interrupts_enabled(FALSE);
 
-        // Re-enable SVME on current core (thread may have migrated since initial check)
-        uint64_t efer2 = rdmsr(MSR_EFER);
-        if (!(efer2 & EFER_SVME))
-            wrmsr(MSR_EFER, efer2 | EFER_SVME);
+        // Re-enable SVME on current core; verify it took effect
+        uint64_t efer_before = rdmsr(MSR_EFER);
+        uint64_t efer_after = efer_before;
+        if (!(efer_after & EFER_SVME)) {
+            wrmsr(MSR_EFER, efer_after | EFER_SVME);
+            efer_after = rdmsr(MSR_EFER);
+        } else {
+            efer_after = efer_before;
+        }
+
+        uint64_t vm_cr = rdmsr(MSR_VM_CR);
+        IOLog("SVM-UC: VMRUN EFER before=0x%llx after=0x%llx SVME=%d VM_CR=0x%llx SVM_DIS=%d\n",
+              efer_before, efer_after, !!(efer_after & EFER_SVME),
+              vm_cr, !!(vm_cr & 0x10)  // VM_CR bit 4 = SVM_DIS
+        );
+
+        if (!(efer_after & EFER_SVME)) {
+            IOLog("SVM-UC: VMRUN ERROR — cannot enable SVME on current core\n");
+            ml_set_interrupts_enabled(prev_intr);
+            return kIOReturnNotReady;
+        }
 
         // Save host TR via VMSAVE, then copy to guest VMCB (VMRUN needs valid TR)
         asm volatile(".byte 0x0F, 0x01, 0xDB\n\t" : : "a"(tr_pa) : "memory");
