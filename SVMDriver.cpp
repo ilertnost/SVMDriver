@@ -74,11 +74,8 @@ static void probe_svm(void) {
 }
 
 static bool enable_svm(void) {
-    uint64_t efer = rdmsr(MSR_EFER);
-    if (efer & EFER_SVME) { gSVMEnabled = true; return true; }
-    wrmsr(MSR_EFER, efer | EFER_SVME);
-    gSVMEnabled = (rdmsr(MSR_EFER) & EFER_SVME) != 0;
-    return gSVMEnabled;
+    // We now enable SVM locally in externalMethod to avoid deadlock during driver start.
+    return true; 
 }
 
 static void disable_svm(void) {

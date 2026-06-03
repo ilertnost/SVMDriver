@@ -1,3 +1,4 @@
+.text
 .globl svm_execute_vmrun
 
 .p2align 3
