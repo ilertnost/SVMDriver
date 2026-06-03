@@ -275,18 +275,20 @@ IOReturn com_amd_svm_uc::externalMethod(uint32_t selector,
         }
 
         // --- Segments for 64-bit Long Mode ---
-        // ES,CS,SS,DS,FS,GS,GDTR,LDTR,IDTR,TR at offsets 0x400..0x4A0
-        for (int i = 0; i < 10; i++) {
+        // ES,CS,SS,DS,FS,GS at offsets 0x400..0x460
+        // GDTR,LDTR,IDTR,TR stay zeroed (bzero above)
+        //     attrib 0x2093 = P=1, DPL=0, S=1, W=1, G=1
+        for (int i = 0; i < 6; i++) {
             int off = 0x400 + i * 16;
             W16(off, 0);          // selector = 0
-            W16(off + 2, 0x2093); // attrib: P=1,DPL=0,S=1,W=1
-            W32(off + 4, 0xFFFF); // limit
+            W16(off + 2, 0x2093); // attrib
+            W32(off + 4, 0xFFFFFFFF); // limit (flat)
             W64(off + 8, 0);      // base = 0
         }
         // CS at index 1 (offset 0x410): 64-bit code segment
         W16(0x410, 0x08);         // selector = 0x08
         W16(0x412, 0x209B);       // attrib: P=1,DPL=0,S=1,Code=1,L=1,D=0
-        W32(0x414, 0xFFFFFFFF);   // limit (ignored in 64-bit but must be non-zero)
+        W32(0x414, 0xFFFFFFFF);   // limit
         W64(0x418, 0);            // base = 0
 
         // CPL = 0 at 0x4CA
