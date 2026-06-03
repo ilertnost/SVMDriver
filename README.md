@@ -86,11 +86,11 @@ All tests passed!
 ┌──────────────┐     IOConnectCallScalarMethod     ┌──────────────┐
 │  svm_test    │ ──────────────────────────────►   │ SVMDriver    │
 │  (userspace) │                                   │ (kernel)     │
-└──────────────┘                                   └──────┬───────┘
+└──────────────┘                                   └───────┬──────┘
                                                            │ VMRUN
                                                            ▼
                                                     ┌──────────────┐
                                                     │ AMD CPU SVM  │
-                                                    │ (hardware)    │
+                                                    │ (hardware)   │
                                                     └──────────────┘
 
