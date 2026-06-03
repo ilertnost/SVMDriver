@@ -76,8 +76,8 @@ static void probe_svm(void) {
 }
 
 static bool enable_svm(void) {
-    // We now enable SVM locally in externalMethod to avoid deadlock during driver start.
-    return true; 
+    gSVMEnabled = gSVMProbed;
+    return gSVMProbed; 
 }
 
 static void disable_svm(void) {
