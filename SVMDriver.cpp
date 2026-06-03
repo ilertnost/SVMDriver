@@ -343,13 +343,17 @@ IOReturn com_amd_svm_uc::externalMethod(uint32_t selector,
         W64(0x568, 0); // DR6
 
         // --- Control area ---
-        W32(0x008, (1 << 14));              // Intercept #PF
-        W32(0x00C, (1 << 1) | (1 << 18) | (1 << 24) | (1 << 31)); // VMMCALL|CPUID|HLT|SHUTDOWN
+        // Intercept #PF (exception vector 14)
+        W32(0x008, (1 << 14));
+        // Intercept instructions: INTR(0)|NMI(1)|CPUID(5)|HLT(7)|SHUTDOWN(14)
+        // Without HLT, guest HLT hangs VMRUN forever. Without SHUTDOWN, triple fault hangs.
+        // Without CPUID, our test guest won't VMEXIT. INTR ensures interrupts wake VMRUN.
+        W32(0x00C, (1 << 0) | (1 << 1) | (1 << 5) | (1 << 7) | (1 << 14));
         W32(0x058, 1);                      // Guest ASID = 1
         W32(0x0C0, 0);                      // VMCB Clean = 0 (reload all)
 
         // Write CPUID (0F A2) + HLT (F4) at offset 0xF00
-        // CPUID with intercept bit 18 causes a clean hardware VMEXIT (code 0x72)
+        // CPUID with intercept causes VMEXIT code 0x72
         v[0xF00] = 0x0F;
         v[0xF01] = 0xA2;
         v[0xF02] = 0xF4;
@@ -447,19 +451,24 @@ IOReturn com_amd_svm_uc::externalMethod(uint32_t selector,
         wrmsr(0x175, save_sys_esp);
         wrmsr(0x176, save_sys_eip);
 
-        // Debug: dump raw bytes around expected exit_code offsets
-        uint64_t c0 = *(uint64_t *)(v + 0x060);
-        uint64_t c1 = *(uint64_t *)(v + 0x068);
-        uint64_t c2 = *(uint64_t *)(v + 0x070);
-        uint64_t c3 = *(uint64_t *)(v + 0x078);
-        uint64_t c4 = *(uint64_t *)(v + 0x080);
-        IOLog("SVM-UC: VMEXIT raw 0x060=%016llx 0x068=%016llx 0x070=%016llx 0x078=%016llx 0x080=%016llx\n",
-              c0, c1, c2, c3, c4);
-        // Pick the one that looks like a valid exit code
-        uint64_t exit_code  = c2;   // 0x070 per Linux 5.15
-        uint64_t exit_info1 = c3;   // 0x078 per Linux 5.15
-        if (c2 == 0 && c1 != 0) { exit_code = c1; exit_info1 = c2; }
-        IOLog("SVM-UC: VMEXIT code=0x%llx info1=0x%llx\n", exit_code, exit_info1);
+        // Read VMEXIT info from VMCB (AMD APM: exit_code@0x068, exit_info1@0x070)
+        uint64_t exit_code  = *(uint64_t *)(v + 0x068);
+        uint64_t exit_info1 = *(uint64_t *)(v + 0x070);
+        uint64_t exit_info2 = *(uint64_t *)(v + 0x078);
+        IOLog("SVM-UC: VMEXIT code=0x%llx info1=0x%llx info2=0x%llx\n",
+              exit_code, exit_info1, exit_info2);
+
+        // If exit code is unexpected, return error so user process can abort
+        if (exit_code == 0) {
+            IOLog("SVM-UC: ERROR - unexpected zero exit code (VMRUN likely rejected guest state)\n");
+            args->scalarOutput[0] = exit_code;
+            args->scalarOutput[1] = exit_info1;
+            return kIOReturnIOError;
+        }
+        // Check for expected exit (CPUID = 0x72)
+        if (exit_code != SVM_EXIT_CPUID) {
+            IOLog("SVM-UC: WARN - unexpected exit code (expected 0x72, got 0x%llx)\n", exit_code);
+        }
 
         args->scalarOutput[0] = exit_code;
         args->scalarOutput[1] = exit_info1;
