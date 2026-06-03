@@ -2,10 +2,7 @@
 
 .p2align 3
 svm_execute_vmrun:
-    # 1. Сохраняем чистый RSP хоста до всех пушей
-    movq %rsp, (%rdi)
-
-    # 2. Сохраняем все регистры общего назначения хоста в стек
+    # 1. Сохраняем все регистры общего назначения хоста в стек
     pushq %rax
     pushq %rbx
     pushq %rcx
@@ -22,26 +19,36 @@ svm_execute_vmrun:
     pushq %r14
     pushq %r15
 
-    # Загружаем физ. адрес VMCB в RAX (второй аргумент - rsi)
-    movq %rsi, %rax
+    # 2. Бэкапим RSP хоста в переменную памяти (адрес в RDI)
+    movq %rsp, (%rdi)
 
-    # 3. VMSAVE (сохраняем FS/GS/TR/LDTR/MSRs)
-    # Используем RDX как адрес для VMSAVE (третий аргумент - rdx)
+    # 3. VMSAVE хост-состояние в host_save_pa (адрес в RDX)
     movq %rdx, %rax
     .byte 0x0F, 0x01, 0xD8  # vmsave %rax
     
-    # 4. VMRUN запуск гостя
+    # 4. КРИТИЧНО: Сохраняем host_pa в стек ПЕРЕД VMRUN, 
+    # так как VMRUN затрёт RDX гостевым мусором.
+    pushq %rdx
+
+    # 5. VMRUN запуск гостя (адрес в RSI)
     movq %rsi, %rax
     .byte 0x0F, 0x01, 0xD8 # vmrun %rax
     
-    # 5. VMLOAD восстановление хост-состояния
-    movq %rdx, %rax
-    .byte 0x0F, 0x01, 0xDA # vmload %rax
+    # ==========================================
+    # ---- ПРОИЗОШЕЛ #VMEXIT (Мы в macOS) ----
+    # ==========================================
+
+    # 6. ПЕРВЫМ ДЕЛОМ: восстанавливаем RSP хоста
+    movq (%rdi), %rsp
+
+    # 7. Сразу достаём host_pa из стека и восстанавливаем GS.base / MSRs
+    popq %rax
+    .byte 0x0F, 0x01, 0xDA # vmload %rax (Восстанавливаем GS.base ядра!)
     
-    # 6. STGI - включаем прерывания
+    # 8. Оживляем прерывания
     stgi
     
-    # 7. Восстанавливаем регистры в строго обратном порядке
+    # 9. Теперь безопасно восстанавливаем остальные регистры
     popq %r15
     popq %r14
     popq %r13
@@ -57,8 +64,5 @@ svm_execute_vmrun:
     popq %rcx
     popq %rbx
     popq %rax
-
-    # 8. Восстанавливаем чистый RSP хоста
-    movq (%rdi), %rsp
 
     ret
