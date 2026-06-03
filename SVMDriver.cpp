@@ -389,13 +389,6 @@ IOReturn com_amd_svm_uc::externalMethod(uint32_t selector,
         }
         bzero(trmd->getBytesNoCopy(), PAGE_SIZE);
 
-        // Save host TR via VMSAVE, then copy it to guest VMCB so VMRUN preserves it
-        asm volatile(".byte 0x0F, 0x01, 0xDB\n\t" : : "a"(tr_pa) : "memory");
-        uint8_t *tr_page = (uint8_t *)trmd->getBytesNoCopy();
-        // VMSAVE writes TR at VMCB offset 0x490 (state save base 0x400 + TR offset 0x090)
-        for (int i = 0; i < 16; i++)
-            v[0x490 + i] = tr_page[0x490 + i];
-
         // Save host state that VMRUN does not preserve
         uint64_t save_fs_base   = rdmsr(0xC0000100); // MSR_FS_BASE
         uint64_t save_gs_base   = rdmsr(0xC0000101); // MSR_GS_BASE
@@ -417,9 +410,22 @@ IOReturn com_amd_svm_uc::externalMethod(uint32_t selector,
         W64(0x5A4, rdmsr(0xC0000083)); // Guest CSTAR = host CSTAR
         W64(0x5AC, rdmsr(0xC0000084)); // Guest SFMASK = host SFMASK
 
-        // Disable host interrupts to prevent thread migration during VMRUN
+        // Disable interrupts: prevents thread migration during all SVM ops below
         boolean_t prev_intr = ml_set_interrupts_enabled(FALSE);
+
+        // Re-enable SVME on current core (thread may have migrated since initial check)
+        uint64_t efer2 = rdmsr(MSR_EFER);
+        if (!(efer2 & EFER_SVME))
+            wrmsr(MSR_EFER, efer2 | EFER_SVME);
+
+        // Save host TR via VMSAVE, copy to guest VMCB (VMRUN needs valid TR)
+        asm volatile(".byte 0x0F, 0x01, 0xDB\n\t" : : "a"(tr_pa) : "memory");
+        uint8_t *tr_page = (uint8_t *)trmd->getBytesNoCopy();
+        for (int i = 0; i < 16; i++)
+            v[0x490 + i] = tr_page[0x490 + i];
+
         svm_execute_vmrun(&host_rsp_backup, guest_pa, hsave_pa);
+
         ml_set_interrupts_enabled(prev_intr);
         
         // Restore host MSRs (VMRUN does not preserve these)
