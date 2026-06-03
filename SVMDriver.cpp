@@ -301,11 +301,17 @@ IOReturn com_amd_svm_uc::externalMethod(uint32_t selector,
         // RFLAGS, RIP, RSP
         W64(0x570, 2);                      // RFLAGS
         W64(0x578, guest_pa + 0xF00);       // RIP = identity-mapped code address
-        W64(0x5D8, 0);                      // RSP
+        W64(0x5D8, guest_pa + 0x1F00);      // RSP = top of VMCB page (safe stack)
 
-        // RAX = 0
-        W64(0x5F8, 0);
-        W64(0x640, 0);                      // CR2 = 0
+        // GPRs (RBX/RCX/RDX/RBP at offsets 0x600, 0x608, 0x610, 0x5E0)
+        W64(0x5E0, 0);                      // RBP = 0
+        W64(0x5F8, 0);                      // RAX = 0 (CPUID leaf 0)
+        W64(0x600, 0);                      // RBX = 0
+        W64(0x608, 0);                      // RCX = 0 (CPUID subleaf 0)
+        W64(0x610, 0);                      // RDX = 0
+
+        // CR2 = 0
+        W64(0x640, 0);
 
         // --- Control area ---
         W32(0x008, (1 << 14));              // Intercept #PF
