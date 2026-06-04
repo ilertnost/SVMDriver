@@ -343,13 +343,13 @@ IOReturn com_amd_svm_uc::externalMethod(uint32_t selector,
         W64(0x560, 0); // DR7
         W64(0x568, 0); // DR6
 
-        // --- Control area ---
-        // Intercept #PF (exception vector 14)
+        // --- Control area (AMD APM Vol2 Table 15-3) ---
+        // Exception intercept (#PF = vector 14) at offset 0x008
         W32(0x008, (1 << 14));
-        // Intercept instructions: INTR(0)|NMI(1)|CPUID(5)|HLT(7)|SHUTDOWN(14)
-        // Without HLT, guest HLT hangs VMRUN forever. Without SHUTDOWN, triple fault hangs.
-        // Without CPUID, our test guest won't VMEXIT. INTR ensures interrupts wake VMRUN.
-        W32(0x00C, (1 << 0) | (1 << 1) | (1 << 5) | (1 << 7) | (1 << 14));
+        // General 1 intercepts at offset 0x00C:
+        //   INTR=0, NMI=1, CPUID=18, HLT=24, SHUTDOWN=31
+        // Without CPUID the guest won't VMEXIT. Without HLT/SHUTDOWN the guest hangs.
+        W32(0x00C, (1 << 0) | (1 << 1) | (1 << 18) | (1 << 24) | (1 << 31));
         W32(0x058, 1);                      // Guest ASID = 1
         W32(0x0C0, 0);                      // VMCB Clean = 0 (reload all)
 
