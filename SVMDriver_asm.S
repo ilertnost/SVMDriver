@@ -69,10 +69,21 @@ _svm_execute_vmrun:
     popq    %rax
     .byte 0x0F, 0x01, 0xDA       // vmload %rax
 
-    // 11. Re-enable host interrupts
+    // 11. Clear SVM state on current core before re-enabling interrupts.
+    //     Leaving SVME or VM_HSAVE_PA set can block IPI/NMI delivery on Zen 2.
+    movl    $0xC0010117, %ecx     // MSR_VM_HSAVE_PA
+    xorq    %rax, %rax
+    xorq    %rdx, %rdx
+    wrmsr                         // VM_HSAVE_PA = 0
+    movl    $0xC0000080, %ecx     // MSR_EFER
+    rdmsr
+    andl    $~0x1000, %eax        // clear EFER_SVME
+    wrmsr                         // EFER.SVME = 0
+
+    // 12. Re-enable host interrupts
     sti
 
-    // 12. Restore all host GPRs
+    // 13. Restore all host GPRs
     popq    %r15
     popq    %r14
     popq    %r13
