@@ -5,8 +5,11 @@ An experimental kernel extension for AMD SVM (Secure Virtual Machine) virtualiza
 ## Purpose
 This driver enables hardware-accelerated virtualization on AMD Ryzen-based Hackintosh systems (macOS Tahoe+). It provides a foundation for native SVM acceleration in tools like Docker, colima, and AOSP builds.
 
-## Status: Under Development ⚠️
-**Experimental** — proof-of-concept, may cause kernel panics. Use at your own risk.
+## Development Paused
+Development is temporarily suspended. The author has moved on, but this repository remains as a reference for AMD SVM on macOS.
+
+## Status: Development Paused ⏸️
+**Experimental** - proof-of-concept, may cause kernel panics. No further development planned at this time.
 
 ## Requirements
 
