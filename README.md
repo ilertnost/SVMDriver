@@ -126,7 +126,7 @@ All tests passed!
 
 ## License
 
-This project is licensed under the **GNU General Public License v2.0 (GPLv2)**.
+This project is licensed under the **GNU General Public License v3.0 (GPLv3)**.
 
 You are free to:
 
@@ -134,13 +134,16 @@ You are free to:
 - Study how it works and modify it
 - Redistribute copies
 - Distribute modified versions
+- Use any patents held by contributors (explicit patent grant)
 
 Under the following conditions:
 
-- Any distributed modifications must also be licensed under GPLv2
+- Any distributed modifications must also be licensed under GPLv3
 - The original copyright notice must be preserved
 - No warranty is provided — the software is provided "as is"
+- **Anti-tivoization**: you cannot distribute the code in a way that prevents users from running modified versions
+- Any networked use of modified code must also provide source to users
 
 See the [LICENSE](LICENSE) file for the full text.
 
-If you fork this project and build on it, your fork must remain open under the same license.
+If you fork this project and build on it, your fork must remain open under the same license. Any patents covering your modifications must also be licensed to all users of the fork.
