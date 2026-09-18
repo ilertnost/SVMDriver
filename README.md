@@ -5,11 +5,37 @@ An experimental kernel extension for AMD SVM (Secure Virtual Machine) virtualiza
 ## Purpose
 This driver enables hardware-accelerated virtualization on AMD Ryzen-based Hackintosh systems (macOS Tahoe+). It provides a foundation for native SVM acceleration in tools like Docker, colima, and AOSP builds.
 
-## Development Paused
-Development is temporarily suspended. The author has moved on, but this repository remains as a reference for AMD SVM on macOS.
+## Status: Development Terminated ❌
 
-## Status: Development Paused ⏸️
-**Experimental** - proof-of-concept, may cause kernel panics. No further development planned at this time.
+**Project permanently frozen and not accepting contributions.**
+
+### Reason
+
+After analyzing the macOS Hypervisor.framework internals, it became clear that Apple's virtualization stack is hardcoded for **Intel VT-x (VMX)** instructions. There is no runtime abstraction layer that would allow a third-party kernel extension to substitute AMD SVM for Intel VMX.
+
+Specifically:
+
+- `Hypervisor.framework` is an API to the **XNU kernel**, not a loadable library. It cannot be patched, replaced, or intercepted from userspace or from a kext.
+- The XNU kernel executes VMX instructions directly. On AMD hardware, these instructions raise `#UD` (Invalid Opcode), causing the entire system to freeze.
+- The entitlement `com.apple.security.hypervisor` is required to use the framework, and it is issued by Apple only. Even with SIP fully disabled, the architectural dependency on VMX remains.
+- XNU is open source, but `Hypervisor.framework` is proprietary and closed. Compiling XNU from source does not provide a replacement.
+
+**Conclusion:** hardware-accelerated virtualization on AMD Hackintosh is not possible without patching the closed-source kernel binary — a task equivalent to writing a full KVM port for macOS. This is beyond the scope of a single developer and outside what this project can achieve.
+
+The repository remains as a reference for anyone investigating AMD SVM on macOS.
+
+### What was achieved
+
+- IOKit `IOService` with `IOUserClient` and shared-memory VMCB
+- VMRUN/VMSAVE/VMLOAD assembly wrappers
+- 64-bit Long Mode guest with identity-mapped page tables
+- Working `svm_test` tool that reaches the first VMEXIT
+
+Development stopped at the point where the system-wide freeze on VMEXIT indicated an architectural dead end, not a code bug.
+
+### Forking
+
+Anyone who wants to continue this work is free to fork the repository and attempt to push it further. The code is provided as-is, with no guarantees. If you find a way around the architectural limitations described above, the community will thank you.
 
 ## Requirements
 
@@ -96,4 +122,25 @@ All tests passed!
                                                     │ AMD CPU SVM  │
                                                     │ (hardware)   │
                                                     └──────────────┘
+```
 
+## License
+
+This project is licensed under the **GNU General Public License v2.0 (GPLv2)**.
+
+You are free to:
+
+- Use the code for any purpose
+- Study how it works and modify it
+- Redistribute copies
+- Distribute modified versions
+
+Under the following conditions:
+
+- Any distributed modifications must also be licensed under GPLv2
+- The original copyright notice must be preserved
+- No warranty is provided — the software is provided "as is"
+
+See the [LICENSE](LICENSE) file for the full text.
+
+If you fork this project and build on it, your fork must remain open under the same license.
